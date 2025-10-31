@@ -12,7 +12,7 @@ from datetime import date
 class Evidence(BaseModel):
     """Evidence citation with page number and text snippet"""
     page: int = Field(..., description="Page number where evidence was found (1-indexed)")
-    snippet: str = Field(..., description="Relevant text snippet from the document")
+    text: str = Field(..., description="Relevant text snippet from the document")
     location: Optional[str] = Field(None, description="Location on page (e.g., 'Box 1', 'Line 3')")
 
 

@@ -151,8 +151,7 @@ Return your answer as JSON with this exact structure:
             response = self.client.chat.completions.create(
                 model=self.semantic_model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)
@@ -175,7 +174,7 @@ Document text:
 Extract the following fields. For each field, provide:
 - value: the extracted value (or "unknown" if not found)
 - confidence: 0.0-1.0 confidence score
-- evidence: array of {{"page": page_number, "snippet": "relevant text", "location": "Box 1"}}
+- evidence: array of {{"page": page_number, "text": "relevant text", "location": "Box 1"}}
 
 Required fields:
 - employee_name, employee_ssn, employee_address
@@ -190,14 +189,13 @@ Optional fields:
 - state_wages, state_tax
 
 Return JSON matching this schema structure. Use "unknown" for values you cannot find.
-Include page numbers (1-indexed) and text snippets as evidence for each field."""
+Include page numbers (1-indexed) and text as evidence for each field."""
 
         try:
             response = self.client.chat.completions.create(
                 model=self.semantic_model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)
@@ -239,15 +237,14 @@ Optional fields:
 - ytd_federal_tax, ytd_ss_tax, ytd_medicare_tax
 - current_net_pay
 
-Return JSON with evidence (page numbers and text snippets) for each field.
+Return JSON with evidence (page numbers and text) for each field.
 Use "unknown" for values not found."""
 
         try:
             response = self.client.chat.completions.create(
                 model=self.semantic_model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)
@@ -294,8 +291,7 @@ Return JSON with evidence for each field. Use "unknown" for values not found."""
             response = self.client.chat.completions.create(
                 model=self.semantic_model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)
@@ -408,8 +404,7 @@ IMPORTANT:
             response = self.client.chat.completions.create(
                 model=self.analysis_model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)
@@ -481,8 +476,7 @@ Return JSON:
             response = self.client.chat.completions.create(
                 model=self.analysis_model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)

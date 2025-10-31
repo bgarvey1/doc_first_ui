@@ -433,6 +433,20 @@ async def generate_mismo(session_id: str):
     )
 
 
+@app.get("/sessions/{session_id}/semantic")
+async def get_semantic_json(session_id: str):
+    """Get semantic JSON extracted from all documents"""
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    semantic_docs = session.extracted_data.get('semantic_docs', [])
+    if not semantic_docs:
+        return {"semantic_docs": [], "message": "No documents processed yet"}
+    
+    return {"semantic_docs": semantic_docs}
+
+
 @app.get("/urla/sections")
 async def get_all_sections():
     """Get all URLA sections"""

@@ -95,6 +95,7 @@ function App() {
   const [currentSection, setCurrentSection] = useState<URLASection | null>(null);
   const [incomeAnalysis, setIncomeAnalysis] = useState<IncomeAnalysis | null>(null);
   const [gapAnalysis, setGapAnalysis] = useState<GapAnalysis | null>(null);
+  const [semanticData, setSemanticData] = useState<any[]>([]);
   const [config, setConfig] = useState<SystemConfig | null>(null);
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -232,6 +233,19 @@ function App() {
     }
   };
 
+  const loadSemanticData = async () => {
+    if (!session) return;
+
+    try {
+      const response = await fetch(`${API_URL}/sessions/${session.session_id}/semantic`);
+      const data = await response.json();
+      setSemanticData(data.semantic_docs || []);
+      setActiveTab('semantic');
+    } catch (error) {
+      console.error('Error loading semantic data:', error);
+    }
+  };
+
   const updateField = async (fieldName: string, value: any) => {
     if (!session || !currentSection) return;
 
@@ -316,7 +330,7 @@ function App() {
         )}
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="upload">
               <Upload className="w-4 h-4 mr-2" />
               Upload
@@ -324,6 +338,10 @@ function App() {
             <TabsTrigger value="form">
               <FileText className="w-4 h-4 mr-2" />
               Form
+            </TabsTrigger>
+            <TabsTrigger value="semantic">
+              <FileText className="w-4 h-4 mr-2" />
+              Semantic
             </TabsTrigger>
             <TabsTrigger value="income">
               <DollarSign className="w-4 h-4 mr-2" />
@@ -454,6 +472,9 @@ function App() {
                   )}
 
                   <div className="flex space-x-2">
+                    <Button onClick={loadSemanticData} variant="outline" className="flex-1">
+                      View Semantic JSON
+                    </Button>
                     <Button onClick={calculateIncome} className="flex-1">
                       Calculate Income
                     </Button>
@@ -461,6 +482,74 @@ function App() {
                       Analyze Gaps
                     </Button>
                   </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="semantic" className="space-y-4">
+            {semanticData.length > 0 ? (
+              <>
+                {semanticData.map((doc, idx) => (
+                  <Card key={idx}>
+                    <CardHeader>
+                      <CardTitle>
+                        Document {idx + 1}: {doc.doc_type || 'Unknown Type'}
+                      </CardTitle>
+                      <CardDescription>
+                        Document ID: {doc.doc_id}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        <div className="flex space-x-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              navigator.clipboard.writeText(JSON.stringify(doc, null, 2));
+                            }}
+                          >
+                            Copy JSON
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = `semantic_${doc.doc_id}.json`;
+                              a.click();
+                            }}
+                          >
+                            Download JSON
+                          </Button>
+                        </div>
+                        <pre className="bg-gray-50 p-4 rounded-lg overflow-auto max-h-96 text-xs">
+                          {JSON.stringify(doc, null, 2)}
+                        </pre>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </>
+            ) : (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Semantic JSON</CardTitle>
+                  <CardDescription>
+                    AI-extracted structured data from your documents
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Alert>
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      No semantic data available. Please upload and process documents first.
+                    </AlertDescription>
+                  </Alert>
                 </CardContent>
               </Card>
             )}
