@@ -26,6 +26,7 @@ from mortgage_assistant import MortgageAssistant
 from urla_analyzer import URLAFormAnalyzer
 from pdf_parser import PDFParser
 from document_extractor import DocumentClassifier, DocumentExtractor
+from ai_pipeline import AIDocumentPipeline
 
 app = FastAPI(title="Mortgage Application API")
 
@@ -128,88 +129,112 @@ async def list_documents(session_id: str):
 
 @app.post("/sessions/{session_id}/process")
 async def process_documents(session_id: str):
-    """Process all documents in a session"""
+    """Process all documents in a session using AI-first pipeline"""
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
     api_key = os.getenv('OPENAI_API_KEY')
-    classifier = DocumentClassifier(api_key)
-    extractor = DocumentExtractor(api_key)
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
     
-    for doc_id, doc in session.documents.items():
-        if doc["processing_status"] != ProcessingStatus.PENDING:
-            continue
+    try:
+        pipeline = AIDocumentPipeline(api_key)
         
-        try:
-            session.update_document_status(doc_id, ProcessingStatus.PROCESSING)
+        documents_to_process = []
+        for doc_id, doc in session.documents.items():
+            if doc["processing_status"] != ProcessingStatus.PENDING:
+                continue
             
             file_path = None
             for f in UPLOAD_DIR.glob(f"{session_id}_{doc_id}_*"):
-                file_path = f
+                file_path = str(f)
                 break
             
-            if not file_path:
-                session.update_document_status(doc_id, ProcessingStatus.FAILED)
-                continue
-            
-            # Parse PDF
-            parser = PDFParser(str(file_path))
-            extracted_text = parser.extract_text()
-            
-            # Classify
-            classification = classifier.classify_document(extracted_text)
-            
-            # Extract data
-            extracted_data = extractor.extract(extracted_text, classification.document_type)
-            
-            doc_type = classification.document_type
-            if doc_type not in session.extracted_data:
-                session.extracted_data[doc_type] = []
-            session.extracted_data[doc_type].append(extracted_data.extracted_fields)
-            
+            if file_path:
+                documents_to_process.append((doc_id, file_path))
+                session.update_document_status(doc_id, ProcessingStatus.PROCESSING)
+        
+        if not documents_to_process:
+            return {"message": "No pending documents to process", "total_documents": 0}
+        
+        result = pipeline.process_session(documents_to_process)
+        
+        session.extracted_data['semantic_docs'] = result['semantic_docs']
+        session.extracted_data['section_1b'] = result['section_1b']
+        session.extracted_data['gaps'] = result['gaps']
+        
+        for doc_id, _ in documents_to_process:
             session.update_document_status(
                 doc_id,
                 ProcessingStatus.COMPLETED,
-                doc_type,
-                classification.confidence,
-                len(extracted_data.extracted_fields)
+                "processed",
+                0.95,
+                1
             )
-            
-            urla_analyzer = URLAFormAnalyzer()
-            mapping_data = {}
-            if doc_type == 'W2':
-                mapping_data['w2_data'] = extracted_data.extracted_fields
-            elif doc_type == 'PAYSTUB':
-                mapping_data['paystub_data'] = extracted_data.extracted_fields
-            elif doc_type == 'VOE':
-                mapping_data['voe_data'] = extracted_data.extracted_fields
-            
-            if mapping_data:
-                urla_fields = urla_analyzer.get_field_mapping_from_docs(mapping_data)
-                
-                for field_name, value in urla_fields.items():
-                    if value is not None:
-                        section_id = "1b"  # Default to employment section
-                        if "borrower" in field_name:
-                            section_id = "1a"
-                        elif "property" in field_name or "loan" in field_name:
-                            section_id = "4a"
-                        
-                        session.set_field_value(
-                            field_name,
-                            value,
-                            section_id,
-                            ValueSource.DOCUMENT_RULE,
-                            classification.confidence,
-                            [doc_id]
-                        )
         
-        except Exception as e:
-            session.update_document_status(doc_id, ProcessingStatus.FAILED)
-            print(f"Error processing document {doc_id}: {e}")
+        section_1b = result['section_1b']
+        for income_source in section_1b.get('income_sources', []):
+            # Extract employer name
+            employer = income_source.get('employer_name', {})
+            if employer and employer.get('value') and employer['value'] != 'unknown':
+                session.set_field_value(
+                    'employer_name',
+                    employer['value'],
+                    '1b',
+                    ValueSource.DOCUMENT_AI,
+                    employer.get('confidence', 0.9),
+                    income_source.get('source_doc_ids', [])
+                )
+            
+            # Extract job title
+            job_title = income_source.get('job_title', {})
+            if job_title and job_title.get('value') and job_title['value'] != 'unknown':
+                session.set_field_value(
+                    'job_title',
+                    job_title['value'],
+                    '1b',
+                    ValueSource.DOCUMENT_AI,
+                    job_title.get('confidence', 0.9),
+                    income_source.get('source_doc_ids', [])
+                )
+            
+            # Extract monthly income
+            total_income = income_source.get('total_monthly_income', {})
+            if total_income and total_income.get('value') and total_income['value'] != 'unknown':
+                session.set_field_value(
+                    'monthly_income',
+                    total_income['value'],
+                    '1b',
+                    ValueSource.DOCUMENT_AI,
+                    total_income.get('confidence', 0.9),
+                    income_source.get('source_doc_ids', [])
+                )
+        
+        session.income_analysis = {
+            'total_monthly_income': section_1b.get('total_monthly_income', 0),
+            'freddie_analysis': section_1b.get('freddie_analysis', ''),
+            'income_sources': section_1b.get('income_sources', [])
+        }
+        
+        session.gap_analysis = result['gaps']
+        
+        return {
+            "message": "Documents processed successfully using AI pipeline",
+            "total_documents": len(documents_to_process),
+            "total_monthly_income": section_1b.get('total_monthly_income', 0),
+            "gaps_found": len(result['gaps'].get('gaps', []))
+        }
     
-    return {"message": "Documents processed", "total_documents": len(session.documents)}
+    except Exception as e:
+        for doc_id, doc in session.documents.items():
+            if doc["processing_status"] == ProcessingStatus.PROCESSING:
+                session.update_document_status(doc_id, ProcessingStatus.FAILED)
+        
+        import traceback
+        error_detail = f"Error processing documents: {str(e)}\n{traceback.format_exc()}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/sessions/{session_id}/urla/{section_id}", response_model=URLASectionResponse)
@@ -287,119 +312,101 @@ async def update_urla_field(session_id: str, update: FieldUpdateRequest):
 
 @app.post("/sessions/{session_id}/income", response_model=IncomeAnalysisResponse)
 async def calculate_income(session_id: str):
-    """Calculate income using Freddie Mac rules"""
+    """Get income analysis from AI pipeline results"""
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    from underwriting_engine import FreddieUnderwritingEngine
-    engine = FreddieUnderwritingEngine("app/freddie_income_guides.json")
+    section_1b = session.extracted_data.get('section_1b')
+    if not section_1b:
+        raise HTTPException(status_code=400, detail="No income data available. Please process documents first.")
     
-    w2_data = session.extracted_data.get('W2', [])
-    paystub_data = session.extracted_data.get('PAYSTUB', [{}])[0] if session.extracted_data.get('PAYSTUB') else None
-    voe_data = session.extracted_data.get('VOE', [{}])[0] if session.extracted_data.get('VOE') else None
+    income_sources = []
+    for src in section_1b.get('income_sources', []):
+        employer_name = src.get('employer_name', {}).get('value', 'Unknown')
+        total_income = src.get('total_monthly_income', {})
+        
+        income_sources.append(IncomeSourceInfo(
+            source_type="Employment",
+            employer_name=employer_name,
+            amount=float(total_income.get('value', 0)) if total_income.get('value') != 'unknown' else 0,
+            frequency="Monthly",
+            is_stable=src.get('freddie_compliant', False),
+            has_continuance=src.get('freddie_compliant', False),
+            notes=src.get('freddie_notes', '')
+        ))
     
-    if not w2_data:
-        raise HTTPException(status_code=400, detail="No W-2 documents found")
-    
-    # Analyze income
-    analysis = engine.analyze_w2_income(w2_data, paystub_data, voe_data)
-    
-    session.income_analysis = analysis.to_dict()
-    
-    income_sources = [
-        IncomeSourceInfo(
-            source_type=src.source_type,
-            employer_name=src.employer_name,
-            amount=src.amount,
-            frequency=src.frequency,
-            is_stable=src.is_stable,
-            has_continuance=src.has_continuance,
-            notes=src.notes
-        )
-        for src in analysis.income_sources
-    ]
+    # Extract recommendations from gaps
+    gaps_data = session.extracted_data.get('gaps', {})
+    recommendations = gaps_data.get('priority_actions', [])
     
     potential_increases = []
-    if len(w2_data) < 2:
-        potential_increases.append({
-            "suggestion": "Upload prior year W-2 for 2-year income history",
-            "potential_benefit": "May increase qualifying income through bonus/overtime averaging"
-        })
+    for gap in gaps_data.get('gaps', []):
+        if gap.get('potential_income_increase'):
+            potential_increases.append({
+                "suggestion": gap.get('recommendation', ''),
+                "potential_benefit": f"Could increase income by ${gap['potential_income_increase']:.2f}/month"
+            })
     
     return IncomeAnalysisResponse(
-        total_monthly_income=analysis.total_monthly_income,
+        total_monthly_income=section_1b.get('total_monthly_income', 0),
         income_sources=income_sources,
-        meets_freddie_requirements=analysis.meets_requirements,
-        compliance_checks=analysis.freddie_mac_compliance,
-        issues=analysis.issues,
-        recommendations=analysis.recommendations,
+        meets_freddie_requirements=all(src.get('freddie_compliant', False) for src in section_1b.get('income_sources', [])),
+        compliance_checks=[section_1b.get('freddie_analysis', '')],
+        issues=section_1b.get('gaps', []),
+        recommendations=recommendations,
         potential_income_increases=potential_increases
     )
 
 
 @app.get("/sessions/{session_id}/gaps", response_model=GapAnalysisResponse)
 async def get_gap_analysis(session_id: str):
-    """Get gap analysis for the application"""
+    """Get gap analysis from AI pipeline results"""
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    from gap_analyzer import GapAnalyzer
-    from mismo_generator import MISMOGenerator
+    gaps_data = session.extracted_data.get('gaps')
+    if not gaps_data:
+        raise HTTPException(status_code=400, detail="No gap analysis available. Please process documents first.")
     
-    # Generate MISMO XML
-    mismo_gen = MISMOGenerator()
-    mismo_xml = mismo_gen.generate_from_extracted_data(
-        session.extracted_data,
-        session.income_analysis
-    )
+    gap_list = []
+    critical = 0
+    warning = 0
+    info = 0
     
-    from mismo_parser import MISMOParser
-    parser = MISMOParser(None)
-    mismo_data = parser.parse_string(mismo_xml)
+    for gap in gaps_data.get('gaps', []):
+        severity = gap.get('severity', 'info')
+        if severity == 'critical':
+            critical += 1
+        elif severity == 'warning':
+            warning += 1
+        else:
+            info += 1
+        
+        gap_list.append(InformationGap(
+            field_name=gap.get('category', 'unknown'),
+            section="1b",  # Default to employment section
+            severity=severity,
+            description=gap.get('description', ''),
+            recommendation=gap.get('recommendation', ''),
+            mismo_path=""
+        ))
     
-    analyzer = GapAnalyzer()
-    gaps = analyzer.analyze_all(mismo_data, session.extracted_data)
+    # Extract suggested documents from recommendations
+    suggested_documents = gaps_data.get('priority_actions', [])
     
-    session.gap_analysis = {
-        "gaps": [g.__dict__ for g in gaps],
-        "completion": analyzer.get_completion_percentage()
-    }
-    
-    gap_list = [
-        InformationGap(
-            field_name=g.field_name,
-            section=g.section,
-            severity=g.severity.value,
-            description=g.description,
-            recommendation=g.recommendation,
-            mismo_path=g.mismo_path
-        )
-        for g in gaps
-    ]
-    
-    critical = len([g for g in gaps if g.severity.value == "critical"])
-    warning = len([g for g in gaps if g.severity.value == "warning"])
-    info = len([g for g in gaps if g.severity.value == "info"])
-    
-    suggested_documents = []
-    if critical > 0:
-        suggested_documents.append("Upload borrower identification documents (ID, SSN card)")
-    if not session.extracted_data.get('W2'):
-        suggested_documents.append("Upload W-2 forms for the last 2 years")
-    if not session.extracted_data.get('PAYSTUB'):
-        suggested_documents.append("Upload most recent paystub (within 30 days)")
-    if not session.extracted_data.get('BANK_STATEMENT'):
-        suggested_documents.append("Upload bank statements for asset verification")
+    # Calculate completion percentage (inverse of gaps)
+    total_possible_fields = 77  # Total URLA fields
+    completion = max(0, 100 - (len(gap_list) / total_possible_fields * 100))
     
     return GapAnalysisResponse(
-        total_gaps=len(gaps),
+        total_gaps=len(gap_list),
         critical_gaps=critical,
         warning_gaps=warning,
         info_gaps=info,
         gaps=gap_list,
-        completion_percentage=analyzer.get_completion_percentage(),
+        completion_percentage=round(completion, 1),
         suggested_documents=suggested_documents
     )
 
